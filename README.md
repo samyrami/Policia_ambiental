@@ -52,13 +52,6 @@ Las respuestas incluyen:
 - 👮 Competencia policial
 - 🤝 Coordinación institucional
 
-## Contribución 🤝
-Las contribuciones son bienvenidas. Por favor:
-1. Hacer Fork del proyecto
-2. Crear una rama para tu característica
-3. Commit de tus cambios
-4. Push a la rama
-5. Abrir un Pull Request
 
 ## Licencia 📄
 Este proyecto está bajo la Licencia Apache License
