@@ -6,15 +6,13 @@ from langchain_openai import ChatOpenAI
 from langchain.schema import HumanMessage, SystemMessage
 from langchain.callbacks.base import BaseCallbackHandler
 from html_template import logo
-from langchain.document_loaders import PyPDFLoader, DirectoryLoader
+from langchain.document_loaders import PyPDFLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.embeddings import OpenAIEmbeddings
 from langchain_community.vectorstores import FAISS
 from langchain.chains import ConversationalRetrievalChain
 from langchain.memory import ConversationBufferMemory
 import re
-import gc
-import os
 
 # Load environment variables
 load_dotenv()
@@ -38,21 +36,18 @@ class LawDocumentProcessor:
             length_function=len
         )
         
-        # Asegurar que los directorios existan
         os.makedirs(self.pdf_directory, exist_ok=True)
         os.makedirs(self.index_directory, exist_ok=True)
 
     def load_vector_store(self):
-        """
-        Carga el vector store existente con manejo seguro de deserialización
-        """
+        """Carga el vector store existente"""
         index_path = os.path.join(self.index_directory, "index.faiss")
         try:
             if os.path.exists(index_path):
                 return FAISS.load_local(
                     self.index_directory, 
                     self.embeddings,
-                    allow_dangerous_deserialization=True  # Solo para archivos de confianza
+                    allow_dangerous_deserialization=True
                 )
             return None
         except Exception as e:
@@ -60,6 +55,7 @@ class LawDocumentProcessor:
             return None
 
     def process_documents(self):
+        """Procesa los documentos PDF y crea el vector store"""
         try:
             pdf_files = [f for f in os.listdir(self.pdf_directory) if f.endswith('.pdf')]
             if not pdf_files:
@@ -67,36 +63,55 @@ class LawDocumentProcessor:
                 return None
 
             documents = []
+            successful_files = []
+            failed_files = []
+            
             for pdf_file in pdf_files:
                 try:
                     file_path = os.path.join(self.pdf_directory, pdf_file)
-                    # Verificar el archivo antes de procesarlo
-                    with open(file_path, 'rb') as f:
-                        # Verificar el encabezado PDF
-                        header = f.read(4)
-                        if header != b'%PDF':
-                            st.warning(f"Archivo corrupto o inválido: {pdf_file}")
+                    
+                    # Verificar si el archivo es válido
+                    with open(file_path, 'rb') as file:
+                        header = file.read(5)
+                        if header != b'%PDF-':
+                            failed_files.append((pdf_file, "Encabezado PDF inválido"))
                             continue
                     
                     loader = PyPDFLoader(file_path)
                     doc_pages = loader.load()
+                    
                     if doc_pages:
                         documents.extend(doc_pages)
-                        st.success(f"Procesado exitosamente: {pdf_file}")
+                        successful_files.append(pdf_file)
+                        st.success(f"✅ Procesado exitosamente: {pdf_file} ({len(doc_pages)} páginas)")
                     else:
-                        st.warning(f"No se pudo extraer contenido de: {pdf_file}")
+                        failed_files.append((pdf_file, "No se pudo extraer contenido"))
                 
                 except Exception as e:
-                    st.error(f"Error procesando {pdf_file}: {str(e)}")
+                    failed_files.append((pdf_file, str(e)))
                     continue
 
+            # Mostrar resumen de procesamiento
+            st.write("---")
+            st.write("📊 Resumen de procesamiento:")
+            st.write(f"- Total archivos: {len(pdf_files)}")
+            st.write(f"- Procesados correctamente: {len(successful_files)}")
+            st.write(f"- Fallidos: {len(failed_files)}")
+            
+            if failed_files:
+                st.error("❌ Archivos que no se pudieron procesar:")
+                for file, error in failed_files:
+                    st.write(f"- {file}: {error}")
+
             if not documents:
-                st.warning("No se pudo extraer contenido de ningún PDF.")
+                st.warning("⚠️ No se pudo extraer contenido de ningún PDF.")
                 return None
 
             texts = self.text_splitter.split_documents(documents)
             vectorstore = FAISS.from_documents(texts, self.embeddings)
             vectorstore.save_local(self.index_directory)
+            
+            st.success(f"✅ Vector store creado exitosamente con {len(texts)} fragmentos de texto")
             return vectorstore
         
         except Exception as e:
@@ -119,362 +134,203 @@ def setup_retrieval_chain(vector_store):
     
     return retrieval_chain
 
+class StreamHandler(BaseCallbackHandler):
+    def __init__(self, container):
+        self.container = container
+        self.text = ""
+        
+    def on_llm_new_token(self, token: str, **kwargs) -> None:
+        self.text += token
+        self.container.markdown(self.text)
+
+def get_legal_context(vector_store, query):
+    """Obtiene el contexto legal relevante para una consulta"""
+    similar_docs = vector_store.similarity_search(query, k=5)
+    context = []
+    
+    for doc in similar_docs:
+        content = doc.page_content
+        source = doc.metadata.get('source', 'Documento desconocido')
+        page = doc.metadata.get('page', 'N/A')
+        
+        # Extraer referencias legales específicas
+        legal_refs = re.findall(r'(?:Artículo|Art\.|Ley|Decreto)\s+\d+[^\n]*', content)
+        
+        context.append({
+            'source': f"{source} (Pág. {page})",
+            'content': content,
+            'legal_refs': legal_refs
+        })
+    
+    return context
+
+SYSTEM_PROMPT = """
+Eres EcoPoliciApp, un asistente especializado en legislación ambiental colombiana, enfocado en apoyar a oficiales de la Policía Ambiental y de Carabineros.
+
+ÁREAS DE ESPECIALIZACIÓN:
+
+🐟 PESCA:
+- Regulaciones AUNAP
+- Tallas mínimas permitidas
+- Vedas y restricciones
+
+🌳 FLORA:
+- Identificación de madera
+- Cálculo de cubitaje
+- Deforestación ilegal
+- Quemas controladas
+
+🦁 FAUNA:
+- Tráfico de especies
+- Manejo en desastres
+- Protocolos de decomiso
+- Especies protegidas
+
+⛏️ MINERÍA:
+- Licencias y permisos
+- Procedimientos de control
+- Maquinaria autorizada
+- Protocolos de incautación
+
+🌊 RECURSOS HÍDRICOS:
+- Contaminación
+- Vertimientos
+- Protección de cuencas
+
+FORMATO DE RESPUESTA:
+
+📋 PROCEDIMIENTO OPERATIVO:
+• [Acciones paso a paso]
+
+⚖️ BASE LEGAL:
+• [Referencias normativas específicas]
+
+🚨 PUNTOS CRÍTICOS:
+• [Aspectos clave a verificar]
+
+🔍 VERIFICACIÓN EN CAMPO:
+• [Lista de chequeo]
+
+📄 DOCUMENTACIÓN REQUERIDA:
+• [Documentos necesarios]
+
+👮 COMPETENCIA POLICIAL:
+• [Alcance de la autoridad]
+
+🤝 COORDINACIÓN INSTITUCIONAL:
+• [Entidades a contactar]
+
+DIRECTRICES:
+1. Priorizar seguridad del personal
+2. Proteger evidencia
+3. Documentar hallazgos
+4. Coordinar con autoridades competentes
+"""
+
+def format_legal_context(context):
+    """Formatea el contexto legal para el prompt"""
+    formatted = []
+    for item in context:
+        refs = '\n'.join(f"• {ref}" for ref in item['legal_refs']) if item['legal_refs'] else "No se encontraron referencias específicas"
+        formatted.append(f"""
+        📚 Fuente: {item['source']}
+        
+        ⚖️ Referencias legales:
+        {refs}
+        
+        💡 Contexto relevante:
+        {item['content'][:500]}...
+        """)
+    return '\n'.join(formatted)
+
+def get_chat_response(prompt, vector_store, temperature=0.3):
+    """Genera respuesta considerando el contexto legal"""
+    try:
+        response_placeholder = st.empty()
+        stream_handler = StreamHandler(response_placeholder)
+        
+        # Detectar tipo de consulta
+        query_type = detect_query_type(prompt)
+        
+        # Obtener contexto legal
+        legal_context = get_legal_context(vector_store, prompt)
+        
+        # Construir prompt enriquecido
+        enhanced_prompt = f"""
+        Tipo de consulta: {query_type}
+        Consulta: {prompt}
+        
+        Contexto legal relevante:
+        {format_legal_context(legal_context)}
+        
+        Proporciona una respuesta estructurada según el tipo de consulta:
+        
+        Para procedimientos operativos:
+        - Pasos específicos de actuación
+        - Base legal aplicable
+        - Puntos críticos de control
+        - Verificación en campo
+        - Documentación requerida
+        - Competencia policial
+        - Coordinación necesaria
+        
+        Para consultas informativas:
+        - Base legal aplicable
+        - Puntos importantes
+        - Referencias normativas
+        """
+        
+        chat_model = ChatOpenAI(
+            model="gpt-4o",
+            temperature=temperature,
+            api_key=API_KEY,
+            streaming=True,
+            callbacks=[stream_handler]
+        )
+        
+        messages = [
+            SystemMessage(content=SYSTEM_PROMPT),
+            HumanMessage(content=enhanced_prompt)
+        ]
+        
+        response = chat_model.invoke(messages)
+        return stream_handler.text
+            
+    except Exception as e:
+        st.error(f"Error generando respuesta: {str(e)}")
+        return "Lo siento, ocurrió un error al procesar su solicitud."
+
+def detect_query_type(prompt):
+    """Detecta el tipo de consulta para adaptar la respuesta"""
+    keywords = {
+        'PESCA': ['pesca', 'aunap', 'talla', 'peces'],
+        'FLORA': ['madera', 'cubitaje', 'deforestación', 'quemas'],
+        'FAUNA': ['animales', 'especies', 'tráfico', 'decomiso'],
+        'MINERÍA': ['minería', 'maquinaria', 'extracción', 'explotación'],
+        'RECURSOS_HÍDRICOS': ['agua', 'vertimientos', 'contaminación', 'río']
+    }
+    
+    prompt_lower = prompt.lower()
+    for category, terms in keywords.items():
+        if any(term in prompt_lower for term in terms):
+            return category
+    return 'GENERAL'
+
 def main():
     processor = LawDocumentProcessor()
     
-    # Verificar si ya existe el índice FAISS
+    # Inicialización del vector store
     if os.path.exists(os.path.join("faiss_index", "index.faiss")):
-        st.info("Cargando base de conocimientos existente...")
         vector_store = processor.load_vector_store()
-        if vector_store is not None:
-            retrieval_chain = setup_retrieval_chain(vector_store)
     else:
         st.warning("Procesando documentos legales por primera vez...")
         vector_store = processor.process_documents()
-        if vector_store is not None:
-            retrieval_chain = setup_retrieval_chain(vector_store)
-        else:
-            st.error("No se pudo inicializar la base de conocimientos")
-            st.stop()
-
-    SYSTEM_PROMPT = """
-    Eres EcoPoliciApp, un asistente especializado para oficiales de la Policía Ambiental y de Carabineros en Colombia. 
-    Tu objetivo es proporcionar información legal precisa y contextualizada sobre infracciones ambientales, protección de fauna y flora, y regulaciones mineras.
-
-    DIRECTRICES PARA INFORMES:
-
-    I. Clasificación de Infracciones:
-    A. Infracciones Ambientales:
-       - Contra la fauna (tráfico, caza ilegal, pesca irregular)
-       - Contra la flora (deforestación, tráfico de especies)
-       - Minería ilegal
-       - Contaminación de fuentes hídricas
-
-    B. Comportamientos Regulados:
-       - Pesca (tallas mínimas, vedas, artes de pesca)
-       - Aprovechamiento forestal
-       - Quemas controladas
-       - Manejo de emergencias con fauna
-
-    II. Debido Proceso:
-    1. Identificación precisa de la infracción ambiental
-    2. Protocolo de actuación específico
-    3. Derechos del ciudadano
-    4. Procedimientos de decomiso y custodia
-
-    III. Formato de Respuesta:
-
-    • Tipo de Infracción: [Ambiental/Minera/Pesquera]
-
-    • Descripción: [Descripción precisa del comportamiento]
-
-    • Base Legal: [Artículo específico (TEXTO COMPLETO)]
-
-    • Autoridad Competente: [AUNAP/Ministerio de Ambiente/CAR]
-
-    • Medidas: [Preventivas/Sancionatorias]
-
-    • Protocolo de Actuación: [Pasos específicos según el tipo]
-
-    • Medidas de Aseguramiento: [Material/Especies/Evidencias]
-
-    • Entidades de Apoyo: [Instituciones que deben ser notificadas]
-
-    ÁREAS ESPECIALIZADAS:
-
-    1. PESCA:
-    - Verificación de tallas mínimas según AUNAP
-    - Tipos de artes de pesca permitidos
-    - Períodos de veda
-    - Protocolos de decomiso
-
-    2. FLORA:
-    - Cálculo de cubitaje en madera
-    - Especies protegidas
-    - Permisos de aprovechamiento forestal
-    - Protocolos de custodia
-
-    3. MINERÍA:
-    - Verificación de títulos mineros
-    - Licencias ambientales
-    - Minería de subsistencia
-    - Protocolos de decomiso
-
-    4. FAUNA:
-    - Especies en CITES
-    - Protocolos de manejo
-    - Centros de atención autorizados
-    - Procedimientos de rescate
-
-    INSTRUCCIONES ESPECIALES:
-    1. SIEMPRE citar normativa ambiental vigente
-    2. Incluir protocolos de cadena de custodia
-    3. Especificar autoridades competentes
-    4. Detallar medidas de aseguramiento
-    5. Indicar centros de recepción autorizados
-    6. Proveer información de soporte técnico
-    """
-
-    def get_article_text(vector_store, article_reference):
-        """
-        Busca y retorna el texto completo de un artículo específico con mejor precisión.
-        """
-        # Realizar una búsqueda más específica incluyendo variaciones comunes
-        search_queries = [
-            f"Artículo {article_reference}",
-            f"ARTÍCULO {article_reference}",
-            f"Art. {article_reference}",
-            f"Numeral {article_reference}"
-        ]
-        
-        all_results = []
-        for query in search_queries:
-            similar_docs = vector_store.similarity_search(
-                query,
-                k=5  # Aumentado para mejor cobertura
-            )
-            all_results.extend(similar_docs)
-        
-        # Mejorar la extracción del artículo específico
-        for doc in all_results:
-            content = doc.page_content
-            # Buscar coincidencias exactas con diferentes formatos
-            patterns = [
-                rf"(?:Artículo|ARTÍCULO|Art\.|Numeral)\s*{article_reference}\b[.\s]+(.*?)(?=(?:Artículo|ARTÍCULO|Art\.|Numeral)\s*\d+|\Z)",
-                rf"{article_reference}\.\s+(.*?)(?=\d+\.\s+|\Z)"
-            ]
-            
-            for pattern in patterns:
-                match = re.search(pattern, content, re.DOTALL | re.IGNORECASE)
-                if match:
-                    return match.group(1).strip()
-        
-        return None
-
-    def calcular_sancion(detalles_sancion):
-        """
-        Calcula y detalla sanciones ambientales
-        """
-        # Valor del SMMLV para 2025 (actualizable)
-        SMMLV_2025 = 1423500
-        SMDLV_2025 = SMMLV_2025 / 30
-
-        resultado = {
-            "sanciones": [],
-            "procedimiento_detallado": "",
-            "medidas_preventivas": "",
-            "autoridades_competentes": []
-        }
-
-        # Manejo de sanciones monetarias
-        if "monetaria" in detalles_sancion:
-            unidad = detalles_sancion["monetaria"].get("unidad", "SMMLV")
-            cantidad = detalles_sancion["monetaria"].get("cantidad", 0)
-            
-            if unidad == "SMMLV":
-                valor_total = SMMLV_2025 * cantidad
-                resultado["sanciones"].append({
-                    "tipo": "Multa Ambiental",
-                    "unidad": "SMMLV",
-                    "cantidad": cantidad,
-                    "valor": f"${valor_total:,.0f}"
-                })
-
-        # Medidas preventivas
-        resultado["medidas_preventivas"] = """
-        Medidas Preventivas Aplicables:
-        1. Decomiso preventivo de especímenes o productos
-        2. Suspensión de actividad
-        3. Amonestación escrita
-        4. Registro detallado de evidencias
-        """
-
-        # Procedimiento detallado
-        resultado["procedimiento_detallado"] = """
-        Procedimiento Ambiental:
-        1. Identificación de la infracción
-        2. Registro fotográfico y documental
-        3. Aplicación de medidas preventivas
-        4. Cadena de custodia
-        5. Notificación a autoridades ambientales
-        6. Aseguramiento de pruebas
-        """
-
-        # Autoridades competentes
-        resultado["autoridades_competentes"] = [
-            "CAR Regional",
-            "Ministerio de Ambiente",
-            "AUNAP",
-            "Fiscalía Ambiental",
-            "Centro de Atención de Fauna"
-        ]
-
-        return resultado
-
-    def display_response(response_text, container):
-        """Display the response using Streamlit components with article text."""
-        # Simplemente mostrar el texto como markdown
-        container.markdown(response_text)
-
-    class StreamHandler(BaseCallbackHandler):
-        def __init__(self, container):
-            self.container = container
-            self.text = ""
-            
-        def on_llm_new_token(self, token: str, **kwargs) -> None:
-            self.text += token
-
-            display_response(self.text, self.container)
-
-    def extract_table_data(markdown_text):
-        """Extract table data from markdown and convert to DataFrame."""
-        try:
-            # Find table in text using regex
-            table_pattern = r'\|.*\|'
-            table_rows = re.findall(table_pattern, markdown_text)
-            
-            if not table_rows:
-                return None, None
-                
-            # Process table rows
-            headers = ['Campo', 'Valor']
-            data = []
-            
-            for row in table_rows[2:]:
-                values = [col.strip() for col in row.split('|')[1:-1]]
-                if len(values) == 2:
-                    data.append(values)
-            
-            df = pd.DataFrame(data, columns=headers)
-            
-            pre_table = markdown_text.split('|')[0].strip()
-            post_table = markdown_text.split('|')[-1].strip()
-            other_text = f"{pre_table}\n\n{post_table}".strip()
-            
-            return df, other_text
-        except Exception as e:
-            st.error(f"Error procesando la tabla: {str(e)}")
-            return None, None
-
-    def search_laws(query):
-        """Buscar en los documentos legales vectorizados con más detalles."""
-        if vector_store is None:
-            st.error("Base de conocimientos no inicializada")
-            return None
-        
-        # Realizar una búsqueda de similitud en el vector store
-        similar_docs = vector_store.similarity_search(query, k=5)
-        
-        # Preparar los resultados
-        results = []
-        for doc in similar_docs:
-            # Extraer información del contexto
-            content = doc.page_content
-            source = doc.metadata.get('source', 'Documento desconocido')
-            page = doc.metadata.get('page', 'N/A')
-            
-            results.append({
-                'Artículo/Código': f"Fuente: {source}, Página: {page}",
-                'Contenido Relevante': content[:500] + '...',  # Mostrar un extracto más largo
-            })
-        
-        # Convertir a DataFrame para mostrar resultados
-        results_df = pd.DataFrame(results)
-        return results_df
-
-    def get_chat_response(prompt, temperature=0.3):
-        """Generate chat response using the selected LLM with improved context handling."""
-        try:
-            response_placeholder = st.empty()
-            stream_handler = StreamHandler(response_placeholder)
-            
-            # Mejorar la búsqueda de contexto
-            relevant_context = search_laws(prompt)
-            
-            # Extraer posibles referencias a artículos del prompt
-            article_references = re.findall(r'(?:artículo|numeral)\s+(\d+(?:\.\d+)?)', prompt.lower())
-            
-            # Obtener el texto completo de los artículos mencionados
-            article_texts = []
-            if article_references:
-                for ref in article_references:
-                    article_text = get_article_text(vector_store, ref)
-                    if article_text:
-                        article_texts.append(f"Artículo {ref}: {article_text}")
-            
-            # Crear un prompt enriquecido con el contexto y los artículos específicos
-            enhanced_prompt = f"""
-            Consulta: {prompt}
-            
-            Artículos específicos mencionados:
-            {'\n'.join(article_texts) if article_texts else 'No se mencionaron artículos específicos'}
-            
-            Contexto relevante adicional:
-            {relevant_context.to_string() if not relevant_context.empty else 'No se encontró contexto adicional'}
-            
-            Por favor, proporciona una respuesta detallada basada en este contexto y las normas aplicables.
-            """
-            
-            chat_model = ChatOpenAI(
-                model="gpt-4o",
-                temperature=temperature,
-                api_key=API_KEY,
-                streaming=True,
-                callbacks=[stream_handler]
-            )
-            
-            messages = [
-                SystemMessage(content=SYSTEM_PROMPT),
-                HumanMessage(content=enhanced_prompt)
-            ]
-            
-            if "messages" in st.session_state:
-                for msg in st.session_state.messages[-3:]:
-                    if msg["role"] == "user":
-                        messages.append(HumanMessage(content=msg["content"]))
-                    else:
-                        messages.append(SystemMessage(content=msg["content"]))
-            
-            response = chat_model.invoke(messages)
-            return stream_handler.text
-            
-        except Exception as e:
-            st.error(f"Error generando respuesta: {str(e)}")
-            return "Lo siento, ocurrió un error al procesar su solicitud."
-
-    def ensure_directory_exists():
-        """Ensure necessary directories exist."""
-        directories = ["data", "faiss_index"]
-        for directory in directories:
-            if not os.path.exists(directory):
-                os.makedirs(directory)
-
-    def check_startup_health():
-        """Verify all components are ready."""
-        try:
-            # Check API key
-            if not API_KEY:
-                raise ValueError("OPENAI_API_KEY not set")
-            
-            # Check directories
-            ensure_directory_exists()
-            
-            # Check vector store
-            processor = LawDocumentProcessor()  # Crear una instancia
-            vector_store = processor.load_vector_store()  # Llamar al método en la instancia
-            if vector_store is None:
-                st.warning("Initializing knowledge base...")
-                vector_store = processor.process_documents()
-            
-            return True
-        except Exception as e:
-            st.error(f"Startup health check failed: {str(e)}")
-            return False
-
-    # Add this at the start of your main function
-    if not check_startup_health():
+    
+    if vector_store is None:
+        st.error("No se pudo inicializar la base de conocimientos")
         st.stop()
 
+    # UI Setup
     st.write(logo, unsafe_allow_html=True)
     st.title("EcoPoliciApp", anchor=False)
     st.markdown("**Asistente virtual para procedimientos ambientales y protección de recursos naturales**")
@@ -482,44 +338,34 @@ def main():
     if "messages" not in st.session_state:
         st.session_state.messages = []
 
+    # Sidebar
     with st.sidebar:
         st.markdown("""
-        **Bienvenido al Sistema de Consulta de Infracciones Ambientales**
+        **Sistema de Consulta Ambiental**
+        
+        Tipos de consultas:
+        - Información sobre normativa ambiental
+        - Procedimientos de protección
+        - Infracciones y sanciones
+        - Recomendaciones preventivas
         """)
         
-        # Búsqueda en base de datos
-        search_query = st.text_input("Buscar en base de datos:")
-        if search_query:
-            results = search_laws(search_query)
-            if not results.empty:
-                st.dataframe(results)
-            else:
-                st.info("No se encontraron resultados")
-
         if st.button("Borrar Historial"):
             st.session_state.messages = []
             st.experimental_rerun()
 
+    # Chat interface
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
-            if message["role"] == "assistant" and '|' in message["content"]:
-                display_response(message["content"], st)
-            else:
-                st.markdown(message["content"])
+            st.markdown(message["content"])
 
-    if prompt := st.chat_input("Describe la situación..."):
+    if prompt := st.chat_input("¿En qué puedo ayudarte?"):
         st.session_state.messages.append({"role": "user", "content": prompt})
         with st.chat_message("user", avatar="👮"):
             st.markdown(prompt)
         
         with st.chat_message("assistant"):
-            is_multa = prompt.upper().startswith("MULTA:")
-            if is_multa:
-                multa_content = prompt[6:].strip()
-                response = get_chat_response(multa_content)
-            else:
-                response = get_chat_response(prompt)
-            
+            response = get_chat_response(prompt, vector_store)
             st.session_state.messages.append({"role": "assistant", "content": response})
 
 if __name__ == "__main__":
