@@ -34,7 +34,7 @@ css = '''
 
 logo = '''
 <div style="margin-bottom: 15px; text-align: center;">
-    <img src="https://www.policia.gov.co/sites/default/files/funcionalidades/comandos/proteccion-ambiental.png" 
+    <img src="https://cdn.arcgis.com/sharing/rest/content/items/5cc08efa521842be8dd18f8c1dc72434/resources/-W6xpld2M3-A5eT72qj7b.png?" 
          alt="Logo Policía Ambiental" style="max-width: 25%; height: auto;">
 </div>
 '''
