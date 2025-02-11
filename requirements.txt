@@ -19,3 +19,5 @@ aiohttp
 fastapi
 uvicorn
 sounddevice
+portaudio
+portaudio-devel
