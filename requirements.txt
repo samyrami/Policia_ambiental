@@ -18,3 +18,4 @@ speechrecognition
 aiohttp
 fastapi
 uvicorn
+sounddevice

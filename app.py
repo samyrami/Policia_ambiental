@@ -14,6 +14,9 @@ from langchain.chains import ConversationalRetrievalChain
 from langchain.memory import ConversationBufferMemory
 import re
 import speech_recognition as sr
+import sounddevice as sd
+import queue
+import numpy as np
 # Load environment variables
 load_dotenv()
 
@@ -316,19 +319,36 @@ def detect_query_type(prompt):
             return category
     return 'GENERAL'
 
+recognizer = sr.Recognizer()
+audio_queue = queue.Queue()
+
+def callback(indata, frames, time, status):
+    """Callback para grabar audio"""
+    if status:
+        print(status)
+    audio_queue.put(indata.copy())
+
 def capture_voice_input():
-    recognizer = sr.Recognizer()
-    with sr.Microphone() as source:
+    samplerate = 16000  # Frecuencia de muestreo recomendada para reconocimiento de voz
+    duration = 5  # Segundos de grabación
+
+    with sd.InputStream(samplerate=samplerate, channels=1, callback=callback):
         st.info("Escuchando...")
-        audio = recognizer.listen(source)
-        try:
-            text = recognizer.recognize_google(audio, language="es-ES")
-            st.success(f"Transcripción: {text}")
-            return text
-        except sr.UnknownValueError:
-            st.error("No se pudo entender el audio")
-        except sr.RequestError as e:
-            st.error(f"Error al solicitar resultados del servicio de reconocimiento de voz; {e}")
+        sd.sleep(duration * 1000)
+
+    # Convertir audio a formato compatible
+    audio_data = np.concatenate(list(audio_queue.queue), axis=0)
+    audio_data = (audio_data * 32767).astype(np.int16)  # Convertir a formato PCM
+
+    # Reconocer voz
+    try:
+        text = recognizer.recognize_google(audio_data, language="es-ES")
+        st.success(f"Transcripción: {text}")
+        return text
+    except sr.UnknownValueError:
+        st.error("No se pudo entender el audio")
+    except sr.RequestError as e:
+        st.error(f"Error con el servicio de reconocimiento de voz: {e}")
     return ""
 
 
