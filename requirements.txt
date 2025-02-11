@@ -15,6 +15,7 @@ tenacity
 typing-inspect
 pydantic
 speechrecognition
+pyaudio
 aiohttp
 fastapi
 uvicorn
