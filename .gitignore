@@ -10,12 +10,6 @@ env/
 
 # Streamlit
 .streamlit/
-.data/
-
-# Data files
-data/
-/data
-*.pdf
 
 # System files
 .DS_Store
