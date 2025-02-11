@@ -18,4 +18,5 @@ speechrecognition
 aiohttp
 fastapi
 uvicorn
+portaudio
 pyaudio
