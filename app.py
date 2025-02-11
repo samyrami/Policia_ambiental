@@ -13,6 +13,7 @@ from langchain_community.vectorstores import FAISS
 from langchain.chains import ConversationalRetrievalChain
 from langchain.memory import ConversationBufferMemory
 import re
+import speech_recognition as sr
 
 # Load environment variables
 load_dotenv()
@@ -23,7 +24,7 @@ if API_KEY is None:
     st.error("Error: OPENAI_API_KEY not found in environment variables")
     st.stop()
     
-st.set_page_config(page_title="EcoPoliciApp", layout="centered")
+st.set_page_config(page_title="PoliciApp-Eco", layout="centered")
 
 class LawDocumentProcessor:
     def __init__(self, pdf_directory="data", index_directory="faiss_index"):
@@ -316,6 +317,23 @@ def detect_query_type(prompt):
             return category
     return 'GENERAL'
 
+# Función para capturar entrada de voz
+def capture_voice_input():
+    recognizer = sr.Recognizer()
+    with sr.Microphone() as source:
+        st.info("Escuchando...")
+        audio = recognizer.listen(source)
+        try:
+            text = recognizer.recognize_google(audio, language="es-ES")
+            st.success(f"Transcripción: {text}")
+            return text
+        except sr.UnknownValueError:
+            st.error("No se pudo entender el audio")
+        except sr.RequestError as e:
+            st.error(f"Error al solicitar resultados del servicio de reconocimiento de voz; {e}")
+    return ""
+
+
 def main():
     processor = LawDocumentProcessor()
     
@@ -332,7 +350,7 @@ def main():
 
     # UI Setup
     st.write(logo, unsafe_allow_html=True)
-    st.title("EcoPoliciApp", anchor=False)
+    st.title("PoliciApp-Eco", anchor=False)
     st.markdown("**Asistente virtual para procedimientos ambientales y protección de recursos naturales**")
     
     if "messages" not in st.session_state:
@@ -349,24 +367,37 @@ def main():
         - Infracciones y sanciones
         - Recomendaciones preventivas
         """)
-        
-        if st.button("Borrar Historial"):
-            st.session_state.messages = []
-            st.experimental_rerun()
 
     # Chat interface
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
 
-    if prompt := st.chat_input("¿En qué puedo ayudarte?"):
-        st.session_state.messages.append({"role": "user", "content": prompt})
-        with st.chat_message("user", avatar="👮"):
-            st.markdown(prompt)
-        
-        with st.chat_message("assistant"):
-            response = get_chat_response(prompt, vector_store)
-            st.session_state.messages.append({"role": "assistant", "content": response})
+    # Crear un contenedor horizontal para el input y el botón
+    col1, col2 = st.columns([6, 1])
+    
+    with col2:
+        mic_button = st.button("🎤")
+        if mic_button:
+            prompt = capture_voice_input()
+            if prompt:
+                st.session_state.messages.append({"role": "user", "content": prompt})
+                with st.chat_message("user", avatar="👮"):
+                    st.markdown(prompt)
+            
+                with st.chat_message("assistant"):
+                    response = get_chat_response(prompt, vector_store)
+                    st.session_state.messages.append({"role": "assistant", "content": response})
+
+    with col1:
+        if prompt := st.chat_input("¿En qué puedo ayudarte?"):
+            st.session_state.messages.append({"role": "user", "content": prompt})
+            with st.chat_message("user", avatar="👮"):
+                st.markdown(prompt)
+            
+            with st.chat_message("assistant"):
+                response = get_chat_response(prompt, vector_store)
+                st.session_state.messages.append({"role": "assistant", "content": response})
 
 if __name__ == "__main__":
     main()
