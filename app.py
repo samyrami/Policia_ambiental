@@ -14,9 +14,8 @@ from langchain.chains import ConversationalRetrievalChain
 from langchain.memory import ConversationBufferMemory
 import re
 import speech_recognition as sr
-import sounddevice as sd
 import queue
-import numpy as np
+
 # Load environment variables
 load_dotenv()
 
@@ -319,37 +318,6 @@ def detect_query_type(prompt):
             return category
     return 'GENERAL'
 
-recognizer = sr.Recognizer()
-audio_queue = queue.Queue()
-
-def callback(indata, frames, time, status):
-    """Callback para grabar audio"""
-    if status:
-        print(status)
-    audio_queue.put(indata.copy())
-
-def capture_voice_input():
-    samplerate = 16000  # Frecuencia de muestreo recomendada para reconocimiento de voz
-    duration = 5  # Segundos de grabación
-
-    with sd.InputStream(samplerate=samplerate, channels=1, callback=callback):
-        st.info("Escuchando...")
-        sd.sleep(duration * 1000)
-
-    # Convertir audio a formato compatible
-    audio_data = np.concatenate(list(audio_queue.queue), axis=0)
-    audio_data = (audio_data * 32767).astype(np.int16)  # Convertir a formato PCM
-
-    # Reconocer voz
-    try:
-        text = recognizer.recognize_google(audio_data, language="es-ES")
-        st.success(f"Transcripción: {text}")
-        return text
-    except sr.UnknownValueError:
-        st.error("No se pudo entender el audio")
-    except sr.RequestError as e:
-        st.error(f"Error con el servicio de reconocimiento de voz: {e}")
-    return ""
 
 
 def main():
@@ -391,17 +359,7 @@ def main():
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
 
-    # Voice input button
-    if st.button("🎤 Activar micrófono"):
-        voice_input = capture_voice_input()
-        if voice_input:
-            st.session_state.messages.append({"role": "user", "content": voice_input})
-            with st.chat_message("user", avatar="👮"):
-                st.markdown(voice_input)
-            
-            with st.chat_message("assistant"):
-                response = get_chat_response(voice_input, vector_store)
-                st.session_state.messages.append({"role": "assistant", "content": response})
+    
 
     if prompt := st.chat_input("¿En qué puedo ayudarte?"):
         st.session_state.messages.append({"role": "user", "content": prompt})

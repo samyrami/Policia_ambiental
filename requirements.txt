@@ -18,5 +18,3 @@ speechrecognition
 aiohttp
 fastapi
 uvicorn
-sounddevice
-libportaudio2
