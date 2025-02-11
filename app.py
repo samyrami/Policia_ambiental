@@ -13,7 +13,7 @@ from langchain_community.vectorstores import FAISS
 from langchain.chains import ConversationalRetrievalChain
 from langchain.memory import ConversationBufferMemory
 import re
-
+import speech_recognition as sr
 # Load environment variables
 load_dotenv()
 
@@ -316,6 +316,22 @@ def detect_query_type(prompt):
             return category
     return 'GENERAL'
 
+def capture_voice_input():
+    recognizer = sr.Recognizer()
+    with sr.Microphone() as source:
+        st.info("Escuchando...")
+        audio = recognizer.listen(source)
+        try:
+            text = recognizer.recognize_google(audio, language="es-ES")
+            st.success(f"Transcripción: {text}")
+            return text
+        except sr.UnknownValueError:
+            st.error("No se pudo entender el audio")
+        except sr.RequestError as e:
+            st.error(f"Error al solicitar resultados del servicio de reconocimiento de voz; {e}")
+    return ""
+
+
 def main():
     processor = LawDocumentProcessor()
     
@@ -350,14 +366,22 @@ def main():
         - Recomendaciones preventivas
         """)
         
-        if st.button("Borrar Historial"):
-            st.session_state.messages = []
-            st.experimental_rerun()
-
     # Chat interface
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
+
+    # Voice input button
+    if st.button("🎤 Activar micrófono"):
+        voice_input = capture_voice_input()
+        if voice_input:
+            st.session_state.messages.append({"role": "user", "content": voice_input})
+            with st.chat_message("user", avatar="👮"):
+                st.markdown(voice_input)
+            
+            with st.chat_message("assistant"):
+                response = get_chat_response(voice_input, vector_store)
+                st.session_state.messages.append({"role": "assistant", "content": response})
 
     if prompt := st.chat_input("¿En qué puedo ayudarte?"):
         st.session_state.messages.append({"role": "user", "content": prompt})
