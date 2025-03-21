@@ -6,10 +6,11 @@ from langchain_openai import ChatOpenAI
 from langchain.schema import HumanMessage, SystemMessage
 from langchain.callbacks.base import BaseCallbackHandler
 from html_template import logo
-from langchain.document_loaders import PyPDFLoader
+from langchain.document_loaders import PyPDFLoader, TextLoader
+from langchain.document_loaders.csv_loader import CSVLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.embeddings import OpenAIEmbeddings
-from langchain_community.vectorstores import FAISS
+from langchain.vectorstores import FAISS
 from langchain.chains import ConversationalRetrievalChain
 from langchain.memory import ConversationBufferMemory
 import re
@@ -27,9 +28,11 @@ if API_KEY is None:
     
 st.set_page_config(page_title="EcoPoliciApp", layout="centered")
 
+
+
 class LawDocumentProcessor:
-    def __init__(self, pdf_directory="data", index_directory="faiss_index"):
-        self.pdf_directory = pdf_directory
+    def __init__(self, document_directory="data", index_directory="faiss_index"):
+        self.document_directory = document_directory
         self.index_directory = index_directory
         self.embeddings = OpenAIEmbeddings()
         self.text_splitter = RecursiveCharacterTextSplitter(
@@ -38,39 +41,60 @@ class LawDocumentProcessor:
             length_function=len
         )
         
-        os.makedirs(self.pdf_directory, exist_ok=True)
+        os.makedirs(self.document_directory, exist_ok=True)
         os.makedirs(self.index_directory, exist_ok=True)
 
     def load_vector_store(self):
-        """Carga el vector store existente"""
-        index_path = os.path.join(self.index_directory, "index.faiss")
+        """Loads existing vector store"""
+        index_faiss_path = os.path.join(self.index_directory, "index.faiss")
+        
+        # Try loading the vector store
         try:
-            if os.path.exists(index_path):
-                return FAISS.load_local(
-                    self.index_directory, 
-                    self.embeddings,
-                    allow_dangerous_deserialization=True
-                )
-            return None
+            vector_store = FAISS.load_local(
+                self.index_directory, 
+                self.embeddings,
+                allow_dangerous_deserialization=True
+            )
+            st.success("Vector store loaded successfully!")
+            return vector_store
         except Exception as e:
-            st.error(f"Error cargando vector store: {str(e)}")
-            return None
+            st.error(f"Error loading vector store: {str(e)}")
+            
+            # If it fails, try to rebuild it
+            st.warning("The FAISS index appears to be corrupted. Trying to rebuild it...")
+            
+            # Rename the problematic file for debugging
+            problem_file = os.path.join(self.index_directory, "problem_index.faiss")
+            if os.path.exists(problem_file):
+                os.remove(problem_file)
+            if os.path.exists(index_faiss_path):
+                os.rename(index_faiss_path, problem_file)
+            
+            # Create a new index from documents
+            return self.process_documents()
 
     def process_documents(self):
-        """Procesa los documentos PDF y crea el vector store"""
+        """Procesa los documentos PDF, Excel y TXT y crea el vector store"""
         try:
-            pdf_files = [f for f in os.listdir(self.pdf_directory) if f.endswith('.pdf')]
-            if not pdf_files:
-                st.warning("No se encontraron archivos PDF en el directorio data.")
+            # Busca todos los tipos de archivos soportados
+            pdf_files = [f for f in os.listdir(self.document_directory) if f.lower().endswith('.pdf')]
+            excel_files = [f for f in os.listdir(self.document_directory) if f.lower().endswith(('.xlsx', '.xls'))]
+            txt_files = [f for f in os.listdir(self.document_directory) if f.lower().endswith('.txt')]
+            
+            all_files = pdf_files + excel_files + txt_files
+            
+            if not all_files:
+                st.warning("No se encontraron archivos (PDF, Excel, TXT) en el directorio data.")
                 return None
 
             documents = []
             successful_files = []
             failed_files = []
             
+            # Procesar archivos PDF
             for pdf_file in pdf_files:
                 try:
-                    file_path = os.path.join(self.pdf_directory, pdf_file)
+                    file_path = os.path.join(self.document_directory, pdf_file)
                     
                     # Verificar si el archivo es válido
                     with open(file_path, 'rb') as file:
@@ -92,11 +116,46 @@ class LawDocumentProcessor:
                 except Exception as e:
                     failed_files.append((pdf_file, str(e)))
                     continue
+            
+            # Procesar archivos Excel
+            for excel_file in excel_files:
+                try:
+                    file_path = os.path.join(self.document_directory, excel_file)
+                    excel_docs = self.process_excel_file(file_path)
+                    
+                    if excel_docs:
+                        documents.extend(excel_docs)
+                        successful_files.append(excel_file)
+                        st.success(f"✅ Procesado exitosamente: {excel_file} ({len(excel_docs)} hojas)")
+                    else:
+                        failed_files.append((excel_file, "No se pudo extraer contenido"))
+                
+                except Exception as e:
+                    failed_files.append((excel_file, str(e)))
+                    continue
+            
+            # Procesar archivos TXT
+            for txt_file in txt_files:
+                try:
+                    file_path = os.path.join(self.document_directory, txt_file)
+                    loader = TextLoader(file_path)
+                    txt_docs = loader.load()
+                    
+                    if txt_docs:
+                        documents.extend(txt_docs)
+                        successful_files.append(txt_file)
+                        st.success(f"✅ Procesado exitosamente: {txt_file}")
+                    else:
+                        failed_files.append((txt_file, "No se pudo extraer contenido"))
+                
+                except Exception as e:
+                    failed_files.append((txt_file, str(e)))
+                    continue
 
             # Mostrar resumen de procesamiento
             st.write("---")
             st.write("📊 Resumen de procesamiento:")
-            st.write(f"- Total archivos: {len(pdf_files)}")
+            st.write(f"- Total archivos: {len(all_files)}")
             st.write(f"- Procesados correctamente: {len(successful_files)}")
             st.write(f"- Fallidos: {len(failed_files)}")
             
@@ -106,7 +165,7 @@ class LawDocumentProcessor:
                     st.write(f"- {file}: {error}")
 
             if not documents:
-                st.warning("⚠️ No se pudo extraer contenido de ningún PDF.")
+                st.warning("⚠️ No se pudo extraer contenido de ningún archivo.")
                 return None
 
             texts = self.text_splitter.split_documents(documents)
@@ -154,12 +213,20 @@ def get_legal_context(vector_store, query):
         content = doc.page_content
         source = doc.metadata.get('source', 'Documento desconocido')
         page = doc.metadata.get('page', 'N/A')
+        sheet = doc.metadata.get('sheet', None)
         
         # Extraer referencias legales específicas
         legal_refs = re.findall(r'(?:Artículo|Art\.|Ley|Decreto)\s+\d+[^\n]*', content)
         
+        # Preparar información de la fuente
+        source_info = f"{source}"
+        if page != 'N/A':
+            source_info += f" (Pág. {page})"
+        if sheet:
+            source_info += f" (Hoja: {sheet})"
+        
         context.append({
-            'source': f"{source} (Pág. {page})",
+            'source': source_info,
             'content': content,
             'legal_refs': legal_refs
         })
@@ -318,8 +385,6 @@ def detect_query_type(prompt):
             return category
     return 'GENERAL'
 
-
-
 def main():
     processor = LawDocumentProcessor()
     
@@ -339,6 +404,7 @@ def main():
     st.title("EcoPoliciApp", anchor=False)
     st.markdown("**Asistente virtual para procedimientos ambientales y protección de recursos naturales**")
     
+    
     if "messages" not in st.session_state:
         st.session_state.messages = []
 
@@ -352,14 +418,17 @@ def main():
         - Procedimientos de protección
         - Infracciones y sanciones
         - Recomendaciones preventivas
+        
+        **Formatos de archivo soportados:**
+        - PDF: Documentos legales, normativas, informes
+        - Excel (.xlsx, .xls): Datos tabulares, registros
+        - TXT: Documentos de texto plano
         """)
         
     # Chat interface
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
-
-    
 
     if prompt := st.chat_input("¿En qué puedo ayudarte?"):
         st.session_state.messages.append({"role": "user", "content": prompt})
