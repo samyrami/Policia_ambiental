@@ -55,7 +55,7 @@ class LawDocumentProcessor:
                 self.embeddings,
                 allow_dangerous_deserialization=True
             )
-            st.success("Vector store loaded successfully!")
+
             return vector_store
         except Exception as e:
             st.error(f"Error loading vector store: {str(e)}")
