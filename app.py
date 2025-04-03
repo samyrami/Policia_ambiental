@@ -326,37 +326,40 @@ def format_legal_context(context):
 
 def extract_procedure(text):
     """Extract procedure from response"""
-    # Buscar el contenido después de "PROCEDIMIENTO OPERATIVO:" y antes de la siguiente sección
-    patterns = [
-        r'📋 PROCEDIMIENTO OPERATIVO:\s*(?:\n\s*•[^\n]*)+',
-        r'PROCEDIMIENTO OPERATIVO:\s*(?:\n\s*•[^\n]*)+',
-        r'ACCIONES PASO A PASO:\s*(?:\n\s*•[^\n]*)+',
-        r'PASOS:\s*(?:\n\s*•[^\n]*)+',
+    # Buscar la sección de procedimiento operativo
+    section_patterns = [
+        r'📋\s*PROCEDIMIENTO OPERATIVO:[\s\S]*?(?=(?:⚖️|🚨|🔍|📄|👮|🤝|$))',
+        r'PROCEDIMIENTO OPERATIVO:[\s\S]*?(?=(?:⚖️|🚨|🔍|📄|👮|🤝|$))',
+        r'ACCIONES PASO A PASO:[\s\S]*?(?=(?:⚖️|🚨|🔍|📄|👮|🤝|$))',
     ]
     
-    for pattern in patterns:
-        matches = re.findall(pattern, text, re.MULTILINE | re.IGNORECASE)
-        if matches:
-            # Extraer los puntos del procedimiento
-            steps = re.findall(r'•\s*([^\n]+)', matches[0])
+    for pattern in section_patterns:
+        section_match = re.search(pattern, text, re.IGNORECASE | re.MULTILINE)
+        if section_match:
+            section_text = section_match.group(0)
+            # Extraer los puntos con viñetas
+            steps = re.findall(r'•\s*([^\n]+)', section_text)
             if steps:
-                # Enumerar los pasos
-                numbered_steps = [f"{i+1}. {step.strip()}" for i, step in enumerate(steps)]
-                return "\n".join(numbered_steps)
+                # Crear resumen conciso de los pasos
+                summary_steps = []
+                for i, step in enumerate(steps, 1):
+                    # Extraer la acción principal del paso (primera parte hasta la coma o punto)
+                    main_action = re.split('[,.]', step.strip())[0]
+                    summary_steps.append(f"{i}. {main_action}")
+                return "\n".join(summary_steps)
     
-    # Si no encuentra con los patrones anteriores, buscar en el texto completo
-    all_bullet_points = re.findall(r'•\s*([^\n]+)', text)
-    if all_bullet_points:
-        # Tomar los puntos que parecen ser pasos de procedimiento
-        procedure_steps = []
-        for point in all_bullet_points:
-            # Filtrar puntos que probablemente sean pasos de procedimiento
-            if any(action_word in point.lower() for action_word in ['verificar', 'realizar', 'documentar', 'coordinar', 'informar', 'inspeccionar', 'medir', 'comparar', 'contactar', 'solicitar']):
-                procedure_steps.append(point)
-        
-        if procedure_steps:
-            numbered_steps = [f"{i+1}. {step.strip()}" for i, step in enumerate(procedure_steps)]
-            return "\n".join(numbered_steps)
+    # Si no encuentra la sección específica, buscar viñetas en el texto
+    all_steps = re.findall(r'•\s*([^\n]+)', text)
+    if all_steps:
+        summary_steps = []
+        for i, step in enumerate(all_steps[:5], 1):  # Limitar a 5 pasos principales
+            main_action = re.split('[,.]', step.strip())[0]
+            if any(action_word in main_action.lower() for action_word in 
+                ['verificar', 'realizar', 'documentar', 'coordinar', 'informar', 
+                 'inspeccionar', 'medir', 'comparar', 'contactar', 'solicitar']):
+                summary_steps.append(f"{i}. {main_action}")
+        if summary_steps:
+            return "\n".join(summary_steps)
     
     return "No se encontraron pasos específicos del procedimiento"
 
