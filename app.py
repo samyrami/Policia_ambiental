@@ -17,6 +17,7 @@ import re
 import speech_recognition as sr
 import queue
 
+
 # Load environment variables
 load_dotenv()
 
@@ -294,6 +295,17 @@ DIRECTRICES:
 2. Proteger evidencia
 3. Documentar hallazgos
 4. Coordinar con autoridades competentes
+
+FORMATO DE RESPUESTA ADICIONAL:
+Asegúrate de incluir siempre estas secciones claramente marcadas en tu respuesta:
+
+SITUACIÓN: [Descripción clara y concisa del caso reportado]
+
+AUTORIDADES: [Lista específica de autoridades competentes]
+
+BASE LEGAL: [Referencias legales aplicables, incluyendo leyes, decretos y artículos relevantes]
+
+Cada sección debe estar claramente marcada con estos encabezados exactos para facilitar su procesamiento.
 """
 
 def format_legal_context(context):
@@ -311,6 +323,128 @@ def format_legal_context(context):
         {item['content'][:500]}...
         """)
     return '\n'.join(formatted)
+
+def extract_procedure(text):
+    """Extract procedure from response"""
+    # Buscar el contenido después de "PROCEDIMIENTO OPERATIVO:" y antes de la siguiente sección
+    patterns = [
+        r'📋 PROCEDIMIENTO OPERATIVO:\s*(?:\n\s*•[^\n]*)+',
+        r'PROCEDIMIENTO OPERATIVO:\s*(?:\n\s*•[^\n]*)+',
+        r'ACCIONES PASO A PASO:\s*(?:\n\s*•[^\n]*)+',
+        r'PASOS:\s*(?:\n\s*•[^\n]*)+',
+    ]
+    
+    for pattern in patterns:
+        matches = re.findall(pattern, text, re.MULTILINE | re.IGNORECASE)
+        if matches:
+            # Extraer los puntos del procedimiento
+            steps = re.findall(r'•\s*([^\n]+)', matches[0])
+            if steps:
+                # Enumerar los pasos
+                numbered_steps = [f"{i+1}. {step.strip()}" for i, step in enumerate(steps)]
+                return "\n".join(numbered_steps)
+    
+    # Si no encuentra con los patrones anteriores, buscar en el texto completo
+    all_bullet_points = re.findall(r'•\s*([^\n]+)', text)
+    if all_bullet_points:
+        # Tomar los puntos que parecen ser pasos de procedimiento
+        procedure_steps = []
+        for point in all_bullet_points:
+            # Filtrar puntos que probablemente sean pasos de procedimiento
+            if any(action_word in point.lower() for action_word in ['verificar', 'realizar', 'documentar', 'coordinar', 'informar', 'inspeccionar', 'medir', 'comparar', 'contactar', 'solicitar']):
+                procedure_steps.append(point)
+        
+        if procedure_steps:
+            numbered_steps = [f"{i+1}. {step.strip()}" for i, step in enumerate(procedure_steps)]
+            return "\n".join(numbered_steps)
+    
+    return "No se encontraron pasos específicos del procedimiento"
+
+def create_executive_summary(response_text):
+    """Creates a simple executive summary table"""
+    # Extract information from response
+    situacion = extract_situation(response_text)
+    procedimiento = extract_procedure(response_text)
+    autoridades = extract_authorities(response_text)
+    base_legal = extract_legal_basis(response_text)
+    
+    # Create DataFrame for display
+    summary_data = {
+        'Campo': [
+            'Situación del Reporte',
+            'Procedimiento',
+            'Autoridades Competentes',
+            'Base Legal'
+        ],
+        'Descripción': [
+            situacion,
+            procedimiento,
+            autoridades,
+            base_legal
+        ]
+    }
+    
+    df = pd.DataFrame(summary_data)
+    
+    # Display table
+    st.write("### 📋 Resumen Ejecutivo")
+    st.table(df.set_index('Campo'))
+    
+
+    return df
+
+def extract_situation(text):
+    """Extract situation from response using relevant keywords"""
+    # Buscar primero en el formato específico
+    situations = re.findall(r'SITUACIÓN:\s*([^\n]+)', text, re.IGNORECASE)
+    if not situations:
+        # Buscar en el contenido general
+        situations = re.findall(r'(?:CASO|SITUACIÓN REPORTADA):\s*([^\n]+)', text, re.IGNORECASE)
+    if not situations:
+        # Tomar el primer párrafo relevante
+        paragraphs = text.split('\n')
+        for p in paragraphs:
+            if len(p.strip()) > 20:  # Asegurar que sea un párrafo sustancial
+                return p.strip()
+    return situations[0].strip() if situations else "Por completar"
+
+def extract_authorities(text):
+    """Extract authorities from response"""
+    # Buscar en diferentes formatos
+    patterns = [
+        r'AUTORIDADES:\s*([^\n]+)',
+        r'COMPETENCIA POLICIAL:\s*([^\n]+)',
+        r'COORDINACIÓN INSTITUCIONAL:\s*([^\n]+)',
+        r'(?:ENTIDADES|INSTITUCIONES)(?:\s+COMPETENTES)?:\s*([^\n]+)'
+    ]
+    
+    for pattern in patterns:
+        matches = re.findall(pattern, text, re.IGNORECASE)
+        if matches:
+            return matches[0].strip()
+    
+    return "Por completar"
+
+def extract_legal_basis(text):
+    """Extract legal basis from response"""
+    # Buscar en diferentes formatos
+    patterns = [
+        r'BASE LEGAL:\s*([^\n]+(?:\n(?!\n)[^\n]+)*)',
+        r'NORMATIVA:\s*([^\n]+(?:\n(?!\n)[^\n]+)*)',
+        r'REFERENCIAS NORMATIVAS:\s*([^\n]+(?:\n(?!\n)[^\n]+)*)'
+    ]
+    
+    for pattern in patterns:
+        matches = re.findall(pattern, text, re.IGNORECASE)
+        if matches:
+            return matches[0].strip()
+    
+    # Buscar referencias legales sueltas
+    legal_refs = re.findall(r'(?:Ley|Decreto|Resolución|Artículo)\s+\d+[^.\n]+', text)
+    if legal_refs:
+        return '; '.join(legal_refs)
+    
+    return "Por completar"
 
 def get_chat_response(prompt, vector_store, temperature=0.3):
     """Genera respuesta considerando el contexto legal"""
@@ -363,6 +497,20 @@ def get_chat_response(prompt, vector_store, temperature=0.3):
         ]
         
         response = chat_model.invoke(messages)
+        
+        # Create and display executive summary table
+        st.write("---")
+        summary_df = create_executive_summary(stream_handler.text)
+        
+        # Add download button for the summary
+        csv = summary_df.to_csv(index=False)
+        st.download_button(
+            label="📥 Descargar Resumen Ejecutivo",
+            data=csv,
+            file_name="resumen_ejecutivo.csv",
+            mime="text/csv",
+        )
+        
         return stream_handler.text
             
     except Exception as e:
