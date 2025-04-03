@@ -326,42 +326,76 @@ def format_legal_context(context):
 
 def extract_procedure(text):
     """Extract procedure from response"""
-    # Buscar la sección de procedimiento operativo
+    # Lista de patrones para encontrar la sección de procedimiento
     section_patterns = [
+        # Patrones con emoji
         r'📋\s*PROCEDIMIENTO OPERATIVO:[\s\S]*?(?=(?:⚖️|🚨|🔍|📄|👮|🤝|$))',
-        r'PROCEDIMIENTO OPERATIVO:[\s\S]*?(?=(?:⚖️|🚨|🔍|📄|👮|🤝|$))',
-        r'ACCIONES PASO A PASO:[\s\S]*?(?=(?:⚖️|🚨|🔍|📄|👮|🤝|$))',
+        r'📋\s*PROCEDIMIENTO:[\s\S]*?(?=(?:⚖️|🚨|🔍|📄|👮|🤝|$))',
+        # Patrones sin emoji
+        r'PROCEDIMIENTO OPERATIVO:[\s\S]*?(?=(?:BASE LEGAL|PUNTOS CRÍTICOS|VERIFICACIÓN|DOCUMENTACIÓN|COMPETENCIA|COORDINACIÓN|$))',
+        r'ACCIONES PASO A PASO:[\s\S]*?(?=(?:BASE LEGAL|PUNTOS CRÍTICOS|VERIFICACIÓN|DOCUMENTACIÓN|COMPETENCIA|COORDINACIÓN|$))',
+        # Patrón para capturar listas con viñetas después de cualquier mención de procedimiento
+        r'(?:PROCEDIMIENTO|ACCIONES|PASOS)(?:[^•]*)((?:\s*•[^\n]+\n?)+)',
     ]
     
+    # Buscar en cada patrón
     for pattern in section_patterns:
         section_match = re.search(pattern, text, re.IGNORECASE | re.MULTILINE)
         if section_match:
             section_text = section_match.group(0)
-            # Extraer los puntos con viñetas
+            
+            # Intentar extraer puntos con viñetas
             steps = re.findall(r'•\s*([^\n]+)', section_text)
+            
+            # Si no hay viñetas, intentar extraer líneas que comienzan con números
+            if not steps:
+                steps = re.findall(r'\d+\.\s*([^\n]+)', section_text)
+            
+            # Si aún no hay pasos, dividir por líneas y filtrar líneas vacías
+            if not steps:
+                lines = [line.strip() for line in section_text.split('\n') if line.strip()]
+                # Eliminar la primera línea si es el encabezado
+                if lines and any(header in lines[0].lower() for header in ['procedimiento', 'acciones', 'pasos']):
+                    lines = lines[1:]
+                steps = [line for line in lines if not line.startswith(('⚖️', '🚨', '🔍', '📄', '👮', '🤝'))]
+            
             if steps:
-                # Crear resumen conciso de los pasos
+                # Limpiar y resumir cada paso
                 summary_steps = []
                 for i, step in enumerate(steps, 1):
-                    # Extraer la acción principal del paso (primera parte hasta la coma o punto)
-                    main_action = re.split('[,.]', step.strip())[0]
-                    summary_steps.append(f"{i}. {main_action}")
-                return "\n".join(summary_steps)
+                    # Limpiar el paso
+                    clean_step = step.strip()
+                    # Remover caracteres especiales del inicio
+                    clean_step = re.sub(r'^[•\-\d\.\s]+', '', clean_step)
+                    # Tomar solo la primera parte significativa
+                    main_action = re.split('[,.:;]', clean_step)[0].strip()
+                    if len(main_action) > 5:  # Asegurar que el paso tiene contenido significativo
+                        summary_steps.append(f"{i}. {main_action}")
+                
+                if summary_steps:
+                    return "\n".join(summary_steps[:5])  # Limitar a 5 pasos principales
     
-    # Si no encuentra la sección específica, buscar viñetas en el texto
-    all_steps = re.findall(r'•\s*([^\n]+)', text)
+    # Si no se encontró nada con los patrones anteriores, buscar cualquier lista numerada o con viñetas
+    all_steps = re.findall(r'(?:(?:\d+\.|\•)\s*([^\n]+))', text)
     if all_steps:
         summary_steps = []
-        for i, step in enumerate(all_steps[:5], 1):  # Limitar a 5 pasos principales
-            main_action = re.split('[,.]', step.strip())[0]
-            if any(action_word in main_action.lower() for action_word in 
-                ['verificar', 'realizar', 'documentar', 'coordinar', 'informar', 
-                 'inspeccionar', 'medir', 'comparar', 'contactar', 'solicitar']):
-                summary_steps.append(f"{i}. {main_action}")
+        for i, step in enumerate(all_steps, 1):
+            if any(action_word in step.lower() for action_word in [
+                'verificar', 'realizar', 'documentar', 'coordinar', 'informar', 
+                'inspeccionar', 'medir', 'comparar', 'contactar', 'solicitar', 
+                'identificar', 'registrar', 'asegurar', 'notificar', 'revisar',
+                'evaluar', 'determinar', 'establecer', 'reportar', 'controlar'
+            ]):
+                main_action = re.split('[,.:;]', step)[0].strip()
+                if len(main_action) > 5:
+                    summary_steps.append(f"{i}. {main_action}")
+                if len(summary_steps) == 5:  # Limitar a 5 pasos
+                    break
+        
         if summary_steps:
             return "\n".join(summary_steps)
     
-    return "No se encontraron pasos específicos del procedimiento"
+    return "1. Verificar la situación\n2. Documentar hallazgos\n3. Coordinar con autoridades"  # Respuesta por defecto
 
 def create_executive_summary(response_text):
     """Creates a simple executive summary table"""
