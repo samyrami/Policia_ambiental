@@ -334,8 +334,6 @@ def extract_procedure(text):
         # Patrones sin emoji
         r'PROCEDIMIENTO OPERATIVO:[\s\S]*?(?=(?:BASE LEGAL|PUNTOS CRÍTICOS|VERIFICACIÓN|DOCUMENTACIÓN|COMPETENCIA|COORDINACIÓN|$))',
         r'ACCIONES PASO A PASO:[\s\S]*?(?=(?:BASE LEGAL|PUNTOS CRÍTICOS|VERIFICACIÓN|DOCUMENTACIÓN|COMPETENCIA|COORDINACIÓN|$))',
-        # Patrón para capturar listas con viñetas después de cualquier mención de procedimiento
-        r'(?:PROCEDIMIENTO|ACCIONES|PASOS)(?:[^•]*)((?:\s*•[^\n]+\n?)+)',
     ]
     
     # Buscar en cada patrón
@@ -360,42 +358,63 @@ def extract_procedure(text):
                 steps = [line for line in lines if not line.startswith(('⚖️', '🚨', '🔍', '📄', '👮', '🤝'))]
             
             if steps:
-                # Limpiar y resumir cada paso
+                # Limpiar y formatear cada paso
                 summary_steps = []
                 for i, step in enumerate(steps, 1):
                     # Limpiar el paso
                     clean_step = step.strip()
                     # Remover caracteres especiales del inicio
                     clean_step = re.sub(r'^[•\-\d\.\s]+', '', clean_step)
-                    # Tomar solo la primera parte significativa
-                    main_action = re.split('[,.:;]', clean_step)[0].strip()
-                    if len(main_action) > 5:  # Asegurar que el paso tiene contenido significativo
-                        summary_steps.append(f"{i}. {main_action}")
+                    
+                    # Dividir en acción principal y detalles
+                    parts = re.split(r'(?:[,:]|\sy\s)', clean_step, 1)
+                    main_action = parts[0].strip()
+                    details = parts[1].strip() if len(parts) > 1 else ""
+                    
+                    # Combinar acción y detalles relevantes
+                    if details:
+                        formatted_step = f"{i}. {main_action} - {details}"
+                    else:
+                        formatted_step = f"{i}. {main_action}"
+                    
+                    if len(formatted_step) > 5:  # Asegurar que el paso tiene contenido significativo
+                        summary_steps.append(formatted_step)
                 
                 if summary_steps:
                     return "\n".join(summary_steps[:5])  # Limitar a 5 pasos principales
     
-    # Si no se encontró nada con los patrones anteriores, buscar cualquier lista numerada o con viñetas
-    all_steps = re.findall(r'(?:(?:\d+\.|\•)\s*([^\n]+))', text)
-    if all_steps:
+    # Si no se encontró nada específico, buscar en el texto completo
+    full_text_steps = re.findall(r'(?:•|\d+\.)\s*([^\n]+)', text)
+    if full_text_steps:
         summary_steps = []
-        for i, step in enumerate(all_steps, 1):
+        for i, step in enumerate(full_text_steps, 1):
             if any(action_word in step.lower() for action_word in [
                 'verificar', 'realizar', 'documentar', 'coordinar', 'informar', 
                 'inspeccionar', 'medir', 'comparar', 'contactar', 'solicitar', 
-                'identificar', 'registrar', 'asegurar', 'notificar', 'revisar',
-                'evaluar', 'determinar', 'establecer', 'reportar', 'controlar'
+                'identificar', 'registrar', 'asegurar', 'notificar', 'revisar'
             ]):
-                main_action = re.split('[,.:;]', step)[0].strip()
-                if len(main_action) > 5:
-                    summary_steps.append(f"{i}. {main_action}")
-                if len(summary_steps) == 5:  # Limitar a 5 pasos
+                parts = re.split(r'(?:[,:]|\sy\s)', step, 1)
+                main_action = parts[0].strip()
+                details = parts[1].strip() if len(parts) > 1 else ""
+                
+                if details:
+                    formatted_step = f"{i}. {main_action} - {details}"
+                else:
+                    formatted_step = f"{i}. {main_action}"
+                
+                summary_steps.append(formatted_step)
+                if len(summary_steps) == 5:
                     break
         
         if summary_steps:
             return "\n".join(summary_steps)
     
-    return "1. Verificar la situación\n2. Documentar hallazgos\n3. Coordinar con autoridades"  # Respuesta por defecto
+    # Respuesta por defecto más detallada
+    return (
+        "1. Verificar la situación - Documentar evidencia inicial\n"
+        "2. Documentar hallazgos - Tomar fotografías y notas detalladas\n"
+        "3. Coordinar con autoridades - Contactar entidades competentes"
+    )
 
 def create_executive_summary(response_text):
     """Creates a simple executive summary table"""
